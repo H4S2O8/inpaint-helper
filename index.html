@@ -156,23 +156,20 @@
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
             
-            // Use floor to prevent sub-pixel issues
             canvas.width = Math.floor(cropCoordinates.width);
             canvas.height = Math.floor(cropCoordinates.height);
 
-            // Draw the cropped portion of the original image onto the new canvas
             ctx.drawImage(
                 originalImageObject,
                 Math.floor(cropCoordinates.x),
                 Math.floor(cropCoordinates.y),
                 Math.floor(cropCoordinates.width),
                 Math.floor(cropCoordinates.height),
-                0, 0, // Destination X, Y on the new canvas
+                0, 0,
                 Math.floor(cropCoordinates.width),
-                Math.floor(cropCoordinates.height) // Destination width, height
+                Math.floor(cropCoordinates.height)
             );
 
-            // Trigger download
             const link = document.createElement('a');
             link.href = canvas.toDataURL('image/png');
             link.download = 'crop_to_edit.png';
@@ -194,22 +191,43 @@
                 const editedImageObject = new Image();
                 editedImageObject.src = e.target.result;
                 editedImageObject.onload = () => {
+                    // --- NEW: Color Correction Logic ---
+                    
+                    // 1. Create a canvas for the original image to read its pixel data
+                    const originalCanvas = document.createElement('canvas');
+                    originalCanvas.width = originalImageObject.width;
+                    originalCanvas.height = originalImageObject.height;
+                    const originalCtx = originalCanvas.getContext('2d');
+                    originalCtx.drawImage(originalImageObject, 0, 0);
+
+                    // 2. Create a canvas for the edited patch, resized to the correct dimensions
+                    const editedPatchCanvas = document.createElement('canvas');
+                    const editedPatchCtx = editedPatchCanvas.getContext('2d');
+                    const cropW = Math.floor(cropCoordinates.width);
+                    const cropH = Math.floor(cropCoordinates.height);
+                    editedPatchCanvas.width = cropW;
+                    editedPatchCanvas.height = cropH;
+                    editedPatchCtx.drawImage(editedImageObject, 0, 0, cropW, cropH);
+
+                    // 3. Calculate the average color difference at the seam
+                    const correction = calculateSeamColorDifference(originalCtx, editedPatchCtx, cropCoordinates);
+                    
+                    // 4. Apply the color correction to the edited patch
+                    applyColorCorrection(editedPatchCtx, correction);
+
+                    // --- End of Color Correction Logic ---
+
+
+                    // 5. Composite the corrected patch onto the final image
                     const finalCanvas = document.createElement('canvas');
                     const finalCtx = finalCanvas.getContext('2d');
-
                     finalCanvas.width = originalImageObject.width;
                     finalCanvas.height = originalImageObject.height;
-
-                    // 1. Draw the original image as the base
                     finalCtx.drawImage(originalImageObject, 0, 0);
-
-                    // 2. MODIFIED: Draw the edited crop on top, resizing it to the original crop dimensions
                     finalCtx.drawImage(
-                        editedImageObject,
-                        Math.floor(cropCoordinates.x), // Paste X coordinate
-                        Math.floor(cropCoordinates.y), // Paste Y coordinate
-                        Math.floor(cropCoordinates.width), // Force width to match original crop
-                        Math.floor(cropCoordinates.height) // Force height to match original crop
+                        editedPatchCanvas, // Use the corrected canvas
+                        Math.floor(cropCoordinates.x),
+                        Math.floor(cropCoordinates.y)
                     );
                     
                     // Trigger final download
@@ -225,6 +243,86 @@
             };
             reader.readAsDataURL(editedFile);
         });
+
+        /**
+         * NEW: Calculates the average RGB difference between the original image border
+         * and the edited patch border.
+         */
+        function calculateSeamColorDifference(originalCtx, editedPatchCtx, coords) {
+            const cropX = Math.floor(coords.x);
+            const cropY = Math.floor(coords.y);
+            const cropW = Math.floor(coords.width);
+            const cropH = Math.floor(coords.height);
+
+            // Get image data for the relevant areas
+            const originalData = originalCtx.getImageData(cropX - 1, cropY - 1, cropW + 2, cropH + 2).data;
+            const patchData = editedPatchCtx.getImageData(0, 0, cropW, cropH).data;
+
+            let totalR = 0, totalG = 0, totalB = 0;
+            let count = 0;
+
+            const getPixel = (data, x, y, width) => {
+                const i = (y * width + x) * 4;
+                return { r: data[i], g: data[i+1], b: data[i+2] };
+            };
+
+            // Compare top and bottom edges
+            for (let x = 0; x < cropW; x++) {
+                // Top seam
+                const p_orig_top = getPixel(originalData, x + 1, 0, cropW + 2);
+                const p_patch_top = getPixel(patchData, x, 0, cropW);
+                totalR += p_orig_top.r - p_patch_top.r;
+                totalG += p_orig_top.g - p_patch_top.g;
+                totalB += p_orig_top.b - p_patch_top.b;
+                // Bottom seam
+                const p_orig_bot = getPixel(originalData, x + 1, cropH + 1, cropW + 2);
+                const p_patch_bot = getPixel(patchData, x, cropH - 1, cropW);
+                totalR += p_orig_bot.r - p_patch_bot.r;
+                totalG += p_orig_bot.g - p_patch_bot.g;
+                totalB += p_orig_bot.b - p_patch_bot.b;
+                count += 2;
+            }
+
+            // Compare left and right edges
+            for (let y = 0; y < cropH; y++) {
+                // Left seam
+                const p_orig_left = getPixel(originalData, 0, y + 1, cropW + 2);
+                const p_patch_left = getPixel(patchData, 0, y, cropW);
+                totalR += p_orig_left.r - p_patch_left.r;
+                totalG += p_orig_left.g - p_patch_left.g;
+                totalB += p_orig_left.b - p_patch_left.b;
+                // Right seam
+                const p_orig_right = getPixel(originalData, cropW + 1, y + 1, cropW + 2);
+                const p_patch_right = getPixel(patchData, cropW - 1, y, cropW);
+                totalR += p_orig_right.r - p_patch_right.r;
+                totalG += p_orig_right.g - p_patch_right.g;
+                totalB += p_orig_right.b - p_patch_right.b;
+                count += 2;
+            }
+            
+            return {
+                dr: totalR / count,
+                dg: totalG / count,
+                db: totalB / count
+            };
+        }
+
+        /**
+         * NEW: Applies the calculated color correction to the entire patch canvas.
+         */
+        function applyColorCorrection(ctx, correction) {
+            const imageData = ctx.getImageData(0, 0, ctx.canvas.width, ctx.canvas.height);
+            const data = imageData.data;
+            const clamp = (val) => Math.max(0, Math.min(255, val));
+
+            for (let i = 0; i < data.length; i += 4) {
+                data[i] = clamp(data[i] + correction.dr);
+                data[i + 1] = clamp(data[i + 1] + correction.dg);
+                data[i + 2] = clamp(data[i + 2] + correction.db);
+            }
+            ctx.putImageData(imageData, 0, 0);
+        }
+
     </script>
 </body>
 </html>
