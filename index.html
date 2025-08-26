@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Static Image Inpaint Helper</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.6.2/cropper.min.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f4f4f9; color: #333; max-width: 900px; margin: 2rem auto; padding: 1rem; }
+        .container { background-color: white; padding: 2rem; border-radius: 8px; box-shadow: 0 4px_8px rgba(0,0,0,0.1); }
+        h1, h2 { color: #0366d6; }
+        .step { margin-bottom: 2rem; padding: 1.5rem; border: 1px solid #e2e8f0; border-radius: 8px; }
+        .hidden { display: none; }
+        img { max-width: 100%; height: auto; display: block; }
+        .button { background-color: #0366d6; color: white; padding: 10px 15px; border: none; border-radius: 6px; cursor: pointer; font-size: 1rem; text-decoration: none; display: inline-block; }
+        .button:hover { background-color: #005cc5; }
+        input[type="file"] { margin-bottom: 1rem; }
+        #status { margin-top: 1rem; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Static Image Inpainting Helper</h1>
+        <p>A 100% browser-based tool to simplify cropping and re-compositing for image editing workflows.</p>
+
+        <div class="step" id="step1">
+            <h2>Step 1: Upload High-Resolution Image</h2>
+            <input type="file" id="original-image-input" accept="image/*">
+        </div>
+
+        <div class="step hidden" id="step2">
+            <h2>Step 2: Select Area and Download Crop</h2>
+            <p>Drag and resize the box to select the area to edit. Then click "Download Cropped Image".</p>
+            <div>
+                <img id="image-to-crop">
+            </div>
+            <br>
+            <button id="download-crop-btn" class="button">Download Cropped Image</button>
+        </div>
+
+        <div class="step hidden" id="step3">
+            <h2>Step 3: Upload Edited Crop & Download Final</h2>
+            <p>After editing the downloaded crop, upload the result here to composite it.</p>
+            <input type="file" id="edited-crop-input" accept="image/png, image/jpeg">
+        </div>
+
+        <div id="status"></div>
+        <a href="" onclick="window.location.reload();" class="button" style="margin-top: 20px; display: none;" id="start-over-btn">Start Over</a>
+    </div>
+
+    <script>
+        const step1 = document.getElementById('step1');
+        const step2 = document.getElementById('step2');
+        const step3 = document.getElementById('step3');
+        const statusDiv = document.getElementById('status');
+        const startOverBtn = document.getElementById('start-over-btn');
+
+        const originalImageInput = document.getElementById('original-image-input');
+        const imageToCropElement = document.getElementById('image-to-crop');
+        const downloadCropBtn = document.getElementById('download-crop-btn');
+        const editedCropInput = document.getElementById('edited-crop-input');
+
+        let cropper;
+        let originalImageObject = new Image();
+        let cropCoordinates = {};
+
+        // --- Step 1 Logic ---
+        originalImageInput.addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                originalImageObject.src = e.target.result;
+                originalImageObject.onload = () => {
+                    imageToCropElement.src = e.target.result;
+                    if (cropper) {
+                        cropper.destroy();
+                    }
+                    cropper = new Cropper(imageToCropElement, { background: false });
+                    step1.style.border = "1px solid green";
+                    step2.classList.remove('hidden');
+                    statusDiv.textContent = 'Ready to select area.';
+                };
+            };
+            reader.readAsDataURL(file);
+        });
+
+        // --- Step 2 Logic ---
+        downloadCropBtn.addEventListener('click', () => {
+            if (!cropper) return;
+            
+            cropCoordinates = cropper.getData();
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            
+            canvas.width = Math.floor(cropCoordinates.width);
+            canvas.height = Math.floor(cropCoordinates.height);
+
+            ctx.drawImage(
+                originalImageObject,
+                Math.floor(cropCoordinates.x),
+                Math.floor(cropCoordinates.y),
+                Math.floor(cropCoordinates.width),
+                Math.floor(cropCoordinates.height),
+                0, 0,
+                Math.floor(cropCoordinates.width),
+                Math.floor(cropCoordinates.height)
+            );
+
+            // Trigger download
+            const link = document.createElement('a');
+            link.href = canvas.toDataURL('image/png');
+            link.download = 'crop_to_edit.png';
+            link.click();
+
+            step2.style.border = "1px solid green";
+            step3.classList.remove('hidden');
+            statusDiv.textContent = 'Now, edit the downloaded image and upload it in Step 3.';
+        });
+
+        // --- Step 3 Logic ---
+        editedCropInput.addEventListener('change', (event) => {
+            const editedFile = event.target.files[0];
+            if (!editedFile) return;
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const editedImageObject = new Image();
+                editedImageObject.src = e.target.result;
+                editedImageObject.onload = () => {
+                    const finalCanvas = document.createElement('canvas');
+                    const finalCtx = finalCanvas.getContext('2d');
+
+                    finalCanvas.width = originalImageObject.width;
+                    finalCanvas.height = originalImageObject.height;
+
+                    // 1. Draw the original image as the base
+                    finalCtx.drawImage(originalImageObject, 0, 0);
+
+                    // 2. Draw the edited crop on top at the correct coordinates
+                    finalCtx.drawImage(editedImageObject, Math.floor(cropCoordinates.x), Math.floor(cropCoordinates.y));
+                    
+                    // Trigger final download
+                    const link = document.createElement('a');
+                    link.href = finalCanvas.toDataURL('image/png');
+                    link.download = 'final_image.png';
+                    link.click();
+                    
+                    step3.style.border = "1px solid green";
+                    statusDiv.textContent = 'Process Complete! Your final image has been downloaded.';
+                    startOverBtn.style.display = 'inline-block';
+                };
+            };
+            reader.readAsDataURL(editedFile);
+        });
+    </script>
+</body>
+</html>
